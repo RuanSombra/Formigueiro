@@ -2,7 +2,7 @@
 
 ---
 
-![UFMA](./ufma_logo.png)&nbsp;&nbsp;&nbsp;&nbsp;![Bacharelado em Ciência e Tecnologia](./eng_comp_logo.png)
+![UFMA](./ufma_logo.png)&nbsp;&nbsp;&nbsp;&nbsp;![Bacharelado em Ciência e Tecnologia](./bict_logo.png)
 
 ---
 
