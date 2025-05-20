@@ -1,68 +1,385 @@
+patches-own [
+  chemical             ;; quantidade de feromônio químico
+  food                 ;; quantidade de comida (0, 1 ou 2)
+  nest?                ;; indica se é parte do ninho
+  nest-scent           ;; "cheiro" do ninho (maior perto do centro)
+  food-source-number   ;; identifica as fontes de comida (1, 2 ou 3)
+  obstacle?            ;; true se o patch for um obstáculo
+]
 
+;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Setup procedures ;;;
+;;;;;;;;;;;;;;;;;;;;;;;;
+
+to setup
+  clear-all ;; Limpa a simulação anterior, cria as formigas e configura o ambiente.
+  set-default-shape turtles "bug" ;; define o formato.
+  create-turtles population
+  [ set size 2         ;; tamanho da formiga.
+    set color red  ]   ;; vermelho = não carrega comida.
+  setup-patches   ;; chamando a variável dos patches.
+  setup-obstacles ;; chamando a variável dos obstáculos.
+  reset-ticks
+  ask turtles with [ [obstacle?] of patch-here ] [
+    move-to one-of patches with [ not obstacle? and not nest? ]
+  ]
+end
+
+to setup-patches ;; Configura cada célula do mundo.
+  ask patches
+  [ set pcolor green
+    setup-nest
+    setup-food
+    recolor-patch ]
+end
+
+to setup-nest  ;; procedimento de correção
+  ;; definir a variável nest? como true dentro do ninho, false em outros lugares
+  set nest? (distancexy 0 0) < 5 ;; calcula a distância do patch atual até as coordenadas (0,0) - o centro do mundo
+  ;; espalha um cheiro de ninho por todo o mundo -- mais forte perto do ninho
+  set nest-scent 200 - distancexy 0 0 ;; Cria um gradiente de cheiro que diminui com a distância do ninho
+end
+
+;; Este procedimento cria 3 fontes de comida em posições específicas do mundo:
+
+to setup-food  ;; procedimento de correção
+  ;; fonte 1: a direita.
+  if (distancexy (0.6 * max-pxcor) 0) < 5
+  [ set food-source-number 1 ]
+  ;; fonte 2: canto inferior esquerdo
+  if (distancexy (-0.6 * max-pxcor) (-0.6 * max-pycor)) < 5
+  [ set food-source-number 2 ]
+  ;; fonte 3: canto superior direito
+  if (distancexy (-0.8 * max-pxcor) (0.8 * max-pycor)) < 5
+  [ set food-source-number 3 ]
+  ;; quantidade de comida.
+  if food-source-number > 0
+  [ set food one-of [1 2] ]
+end
+
+;; colorir o formigueiro.
+;; colorir as fontes de alimentos.
+
+to recolor-patch  ;; patch procedure
+  ;; give color to nest and food sources
+  ifelse nest?
+  [ set pcolor violet ]
+  [ ifelse food > 0
+    [ if food-source-number = 1 [ set pcolor grey ]
+      if food-source-number = 2 [ set pcolor sky  ]
+      if food-source-number = 3 [ set pcolor blue ] ]
+    ;; scale color to show chemical concentration
+    [ set pcolor scale-color green chemical 0.1 5 ] ]
+end
+
+;; Adicione este procedimento para configurar os obstáculos
+
+to setup-obstacles
+  ask patches [
+    set obstacle? false
+  ]
+
+  ;; Opcional: criar paredes nas bordas
+
+  ask patches with [ pxcor = min-pxcor or pxcor = max-pxcor or pycor = min-pycor or pycor = max-pycor ] [
+    set obstacle? true
+    set pcolor black
+  ]
+
+  ;; Obstáculos internos: retângulo central
+
+  ask patches with [
+    abs pxcor < 5 and abs pycor < 5
+  ] [
+    set obstacle? true
+    set pcolor black
+  ]
+
+  ;; Obstáculos aleatórios (exemplo: 200 patches aleatórios)
+
+  let n 200
+  ask n-of n patches with [not obstacle? and not nest? and food = 0] [
+    set obstacle? true
+    set pcolor black
+  ]
+end
+
+;;;;;;;;;;;;;;;;;;;;;
+;;; Go procedures ;;;
+;;;;;;;;;;;;;;;;;;;;;
+
+to go  ;; botão para sempre.
+  ask turtles
+  [ if who >= ticks [ stop ] ;; atrasar a partida inicial.
+    ifelse color = red
+    [ look-for-food  ]       ;; não tem comida? procure por ela.
+    [ return-to-nest ]       ;; achou comida? volte para o ninho.
+    wiggle
+    fd 1 ]
+  diffuse chemical (diffusion-rate / 100)
+  ask patches
+  [ set chemical chemical * (100 - evaporation-rate) / 100  ;; evaporar lentamente o produto químico.
+    recolor-patch ]
+  tick
+end
+
+to return-to-nest  ;; procedimento de tartaruga.
+  if not [obstacle?] of patch-here
+  [
+    set chemical chemical + 60
+  ]
+  if nest?
+  [ ;; largar a comida e sair novamente.
+    set color red
+    rt 180
+  ]
+end
+
+to look-for-food  ;; procedimento de tartaruga.
+  if food > 0
+  [ set color orange + 1     ;; pegar comida.
+    set food food - 1        ;; reduzir a fonte de alimento.
+    rt 180                   ;; vire-se.
+    stop ]
+  ;; vá na direção onde o cheiro químico é mais forte.
+  if (chemical >= 0.05) and (chemical < 2)
+  [ uphill-chemical ]
+end
+
+;; cheire para a esquerda e para a direita e vá onde o cheiro é mais forte.
+
+to uphill-chemical  ;; procedimento de tartaruga.
+  let scent-ahead chemical-scent-at-angle   0
+  let scent-right chemical-scent-at-angle  45
+  let scent-left  chemical-scent-at-angle -45
+  if (scent-right > scent-ahead) or (scent-left > scent-ahead)
+  [ ifelse scent-right > scent-left
+    [ rt 45 ]
+    [ lt 45 ] ]
+end
+
+to wiggle  ;; procedimento de tartaruga.
+  rt random 40
+  lt random 40
+
+  let p patch-ahead 1
+  if (p = nobody) or ([obstacle?] of p) or (not can-move? 1) [
+    rt 180 + random-float 90 - 45 ;; gira mais quando encontra obstáculo ou borda
+  ]
+end
+
+to-report nest-scent-at-angle [angle]
+  let p patch-right-and-ahead angle 1
+  if p = nobody [ report 0 ]
+  report [nest-scent] of p
+end
+
+to-report chemical-scent-at-angle [angle]
+  let p patch-right-and-ahead angle 1
+  if p = nobody [ report 0 ]
+  report [chemical] of p
+end
+
+
+; Copyright 1997 Uri Wilensky.
+; See Info tab for full copyright and license.
 @#$#@#$#@
 GRAPHICS-WINDOW
-210
+257
 10
-647
-448
+762
+516
 -1
 -1
-13.0
+7.0
 1
 10
 1
 1
 1
 0
-1
-1
-1
--16
-16
--16
-16
 0
 0
+1
+-35
+35
+-35
+35
+1
+1
 1
 ticks
 30.0
 
+BUTTON
+46
+71
+126
+104
+NIL
+setup
+NIL
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+1
+
+SLIDER
+31
+106
+221
+139
+diffusion-rate
+diffusion-rate
+0.0
+99.0
+50.0
+1.0
+1
+NIL
+HORIZONTAL
+
+SLIDER
+31
+141
+221
+174
+evaporation-rate
+evaporation-rate
+0.0
+99.0
+10.0
+1.0
+1
+NIL
+HORIZONTAL
+
+BUTTON
+136
+71
+211
+104
+NIL
+go
+T
+1
+T
+OBSERVER
+NIL
+NIL
+NIL
+NIL
+0
+
+SLIDER
+31
+36
+221
+69
+population
+population
+0.0
+200.0
+125.0
+1.0
+1
+NIL
+HORIZONTAL
+
+PLOT
+5
+197
+248
+476
+Food in each pile
+time
+food
+0.0
+50.0
+0.0
+120.0
+true
+false
+"" ""
+PENS
+"food-in-pile1" 1.0 0 -11221820 true "" "plotxy ticks sum [food] of patches with [pcolor = cyan]"
+"food-in-pile2" 1.0 0 -13791810 true "" "plotxy ticks sum [food] of patches with [pcolor = sky]"
+"food-in-pile3" 1.0 0 -13345367 true "" "plotxy ticks sum [food] of patches with [pcolor = blue]"
+
 @#$#@#$#@
 ## WHAT IS IT?
 
-(a general understanding of what the model is trying to show or explain)
+In this project, a colony of ants forages for food. Though each ant follows a set of simple rules, the colony as a whole acts in a sophisticated way.
 
 ## HOW IT WORKS
 
-(what rules the agents use to create the overall behavior of the model)
+When an ant finds a piece of food, it carries the food back to the nest, dropping a chemical as it moves. When other ants "sniff" the chemical, they follow the chemical toward the food. As more ants carry food to the nest, they reinforce the chemical trail.
 
 ## HOW TO USE IT
 
-(how to use the model, including a description of each of the items in the Interface tab)
+Click the SETUP button to set up the ant nest (in violet, at center) and three piles of food. Click the GO button to start the simulation. The chemical is shown in a green-to-white gradient.
+
+The EVAPORATION-RATE slider controls the evaporation rate of the chemical. The DIFFUSION-RATE slider controls the diffusion rate of the chemical.
+
+If you want to change the number of ants, move the POPULATION slider before pressing SETUP.
 
 ## THINGS TO NOTICE
 
-(suggested things for the user to notice while running the model)
+The ant colony generally exploits the food source in order, starting with the food closest to the nest, and finishing with the food most distant from the nest. It is more difficult for the ants to form a stable trail to the more distant food, since the chemical trail has more time to evaporate and diffuse before being reinforced.
 
-## THINGS TO TRY
+Once the colony finishes collecting the closest food, the chemical trail to that food naturally disappears, freeing up ants to help collect the other food sources. The more distant food sources require a larger "critical number" of ants to form a stable trail.
 
-(suggested things for the user to try to do (move sliders, switches, etc.) with the model)
+The consumption of the food is shown in a plot.  The line colors in the plot match the colors of the food piles.
 
 ## EXTENDING THE MODEL
 
-(suggested things to add or change in the Code tab to make the model more complicated, detailed, accurate, etc.)
+Try different placements for the food sources. What happens if two food sources are equidistant from the nest? When that happens in the real world, ant colonies typically exploit one source then the other (not at the same time).
+
+In this project, the ants use a "trick" to find their way back to the nest: they follow the "nest scent." Real ants use a variety of different approaches to find their way back to the nest. Try to implement some alternative strategies.
+
+The ants only respond to chemical levels between 0.05 and 2.  The lower limit is used so the ants aren't infinitely sensitive.  Try removing the upper limit.  What happens?  Why?
+
+In the `uphill-chemical` procedure, the ant "follows the gradient" of the chemical. That is, it "sniffs" in three directions, then turns in the direction where the chemical is strongest. You might want to try variants of the `uphill-chemical` procedure, changing the number and placement of "ant sniffs."
 
 ## NETLOGO FEATURES
 
-(interesting or unusual features of NetLogo that the model uses, particularly in the Code tab; or where workarounds were needed for missing features)
+The built-in `diffuse` primitive lets us diffuse the chemical easily without complicated code.
 
-## RELATED MODELS
+The primitive `patch-right-and-ahead` is used to make the ants smell in different directions without actually turning.
 
-(models in the NetLogo Models Library and elsewhere which are of related interest)
+## HOW TO CITE
 
-## CREDITS AND REFERENCES
+If you mention this model or the NetLogo software in a publication, we ask that you include the citations below.
 
-(a reference to the model's URL on the web if it has one, as well as any other necessary credits, citations, and links)
+For the model itself:
+
+* Wilensky, U. (1997).  NetLogo Ants model.  http://ccl.northwestern.edu/netlogo/models/Ants.  Center for Connected Learning and Computer-Based Modeling, Northwestern University, Evanston, IL.
+
+Please cite the NetLogo software as:
+
+* Wilensky, U. (1999). NetLogo. http://ccl.northwestern.edu/netlogo/. Center for Connected Learning and Computer-Based Modeling, Northwestern University, Evanston, IL.
+
+## COPYRIGHT AND LICENSE
+
+Copyright 1997 Uri Wilensky.
+
+![CC BY-NC-SA 3.0](http://ccl.northwestern.edu/images/creativecommons/byncsa.png)
+
+This work is licensed under the Creative Commons Attribution-NonCommercial-ShareAlike 3.0 License.  To view a copy of this license, visit https://creativecommons.org/licenses/by-nc-sa/3.0/ or send a letter to Creative Commons, 559 Nathan Abbott Way, Stanford, California 94305, USA.
+
+Commercial licenses are also available. To inquire about commercial licenses, please contact Uri Wilensky at uri@northwestern.edu.
+
+This model was created as part of the project: CONNECTED MATHEMATICS: MAKING SENSE OF COMPLEX PHENOMENA THROUGH BUILDING OBJECT-BASED PARALLEL MODELS (OBPML).  The project gratefully acknowledges the support of the National Science Foundation (Applications of Advanced Technologies Program) -- grant numbers RED #9552950 and REC #9632612.
+
+This model was developed at the MIT Media Lab using CM StarLogo.  See Resnick, M. (1994) "Turtles, Termites and Traffic Jams: Explorations in Massively Parallel Microworlds."  Cambridge, MA: MIT Press.  Adapted to StarLogoT, 1997, as part of the Connected Mathematics Project.
+
+This model was converted to NetLogo as part of the projects: PARTICIPATORY SIMULATIONS: NETWORK-BASED DESIGN FOR SYSTEMS LEARNING IN CLASSROOMS and/or INTEGRATED SIMULATION AND MODELING ENVIRONMENT. The project gratefully acknowledges the support of the National Science Foundation (REPP & ROLE programs) -- grant numbers REC #9814682 and REC-0126227. Converted from StarLogoT to NetLogo, 1998.
+
+<!-- 1997 1998 MIT -->
 @#$#@#$#@
 default
 true
@@ -256,22 +573,6 @@ Polygon -7500403 true true 135 105 90 60 45 45 75 105 135 135
 Polygon -7500403 true true 165 105 165 135 225 105 255 45 210 60
 Polygon -7500403 true true 135 90 120 45 150 15 180 45 165 90
 
-sheep
-false
-15
-Circle -1 true true 203 65 88
-Circle -1 true true 70 65 162
-Circle -1 true true 150 105 120
-Polygon -7500403 true false 218 120 240 165 255 165 278 120
-Circle -7500403 true false 214 72 67
-Rectangle -1 true true 164 223 179 298
-Polygon -1 true true 45 285 30 285 30 240 15 195 45 210
-Circle -1 true true 3 83 150
-Rectangle -1 true true 65 221 80 296
-Polygon -1 true true 195 285 210 285 210 240 240 210 195 210
-Polygon -7500403 true false 276 85 285 105 302 99 294 83
-Polygon -7500403 true false 219 85 210 105 193 99 201 83
-
 square
 false
 0
@@ -355,13 +656,6 @@ Line -7500403 true 216 40 79 269
 Line -7500403 true 40 84 269 221
 Line -7500403 true 40 216 269 79
 Line -7500403 true 84 40 221 269
-
-wolf
-false
-0
-Polygon -16777216 true false 253 133 245 131 245 133
-Polygon -7500403 true true 2 194 13 197 30 191 38 193 38 205 20 226 20 257 27 265 38 266 40 260 31 253 31 230 60 206 68 198 75 209 66 228 65 243 82 261 84 268 100 267 103 261 77 239 79 231 100 207 98 196 119 201 143 202 160 195 166 210 172 213 173 238 167 251 160 248 154 265 169 264 178 247 186 240 198 260 200 271 217 271 219 262 207 258 195 230 192 198 210 184 227 164 242 144 259 145 284 151 277 141 293 140 299 134 297 127 273 119 270 105
-Polygon -7500403 true true -1 195 14 180 36 166 40 153 53 140 82 131 134 133 159 126 188 115 227 108 236 102 238 98 268 86 269 92 281 87 269 103 269 113
 
 x
 false
