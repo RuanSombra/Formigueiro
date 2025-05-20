@@ -4,7 +4,7 @@ patches-own [
   nest?                ;; true on nest patches, false elsewhere
   nest-scent           ;; number that is higher closer to the nest
   food-source-number   ;; number (1, 2, or 3) to identify the food sources
-  obstacle?
+  obstacle?            ;; true se o patch for um obstáculo (pedra), false caso contrário
 ]
 
 turtles-own [
@@ -15,7 +15,7 @@ globals [
   energy-inicial      ;; energia inicial das formigas
   energia-ganho       ;; energia ganha ao entregar comida
   energia-perda       ;; energia perdida ao se movimentar
-  num-obstacles       ;; numero de obstaculos
+  num-obstacles       ;; número de obstáculos no ambiente
 ]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;
@@ -26,11 +26,11 @@ to setup
   clear-all
 
   ;; Definir valores de energia
-  set energy-inicial 200     ;; Energia inicial (ajuste conforme necessário)
-  set energia-ganho 10        ;; Energia ganha ao entregar comida
-  set energia-perda 0.5       ;; Energia perdida ao se movimentar
+  set energy-inicial 1000    ;; Energia inicial (ajuste conforme necessário)
+  set energia-ganho 10       ;; Energia ganha ao entregar comida
+  set energia-perda 1      ;; Energia perdida ao se movimentar
   set show-energy? false
-  set num-obstacles 10
+  set num-obstacles 10       ;; Número de obstáculos para adicionar (ajuste conforme necessário)
 
   set-default-shape turtles "bug"
   create-turtles population
@@ -39,20 +39,18 @@ to setup
     set color red            ;; red = not carrying food
     set energy energy-inicial ;; definir energia inicial para cada formiga
   ]
-  setup-obstacles
   setup-patches
+  setup-obstacles
   reset-ticks
 end
 
 to setup-patches
   ask patches
   [
-    setup-nest
+setup-nest
     setup-food
-    set pcolor green
-    set obstacle? false
-    recolor-patch
-  ]
+    set obstacle? false     ;; inicializa todos os patches como não-obstáculos
+    recolor-patch ]
 end
 
 to setup-nest  ;; patch procedure
@@ -77,42 +75,46 @@ to setup-food  ;; patch procedure
   [ set food one-of [1 2] ]
 end
 
-;; Definição de funcionamento dos obstaculos
-
+;; Procedimento para configurar obstáculos (pedras)
 to setup-obstacles
   let current-obstacles 0
 
-  ;; Adiciona os obstaculos
+  ;; Continua adicionando obstáculos até atingir o número desejado
   while [current-obstacles < num-obstacles] [
-    ;; Escolhe um lugar aleatorio
+    ;; Escolhe um patch aleatório
     let potential-patch one-of patches
 
-    ;; Verifica se o lugar é o ninho ou spawn de comida
+    ;; Verifica se o patch NÃO é um ninho ou fonte de comida
     ask potential-patch [
-      if (not nes?) and (food-sourcer-number = 0) and (not obstacle?) [
-        ;; Cria um grupo de obstaculos
+      if (not nest?) and (food-source-number = 0) and (not obstacle?) [
+        ;; Cria um grupo de patches de obstáculos
         ask patches in-radius (1 + random 3) [
-          ;; Evita criar obstaculos no ninho e na fonte de comida
-          if (not nes?) and (food-sourcer-number = 0) and (not obstacle?) [
+          ;; Evita criar obstáculos no ninho ou fontes de comida
+          if (not nest?) and (food-source-number = 0) and (not obstacle?) [
             set obstacle? true
-            recolor-path
+            recolor-patch
           ]
         ]
         set current-obstacles current-obstacles + 1
       ]
     ]
   ]
+end
 
 to recolor-patch  ;; patch procedure
-  ;; give color to nest and food sources
+  ;; give color to nest, food sources and obstacles
   ifelse nest?
   [ set pcolor violet ]
-  [ ifelse food > 0
-    [ if food-source-number = 1 [ set pcolor cyan ]
-      if food-source-number = 2 [ set pcolor sky  ]
-      if food-source-number = 3 [ set pcolor blue ] ]
-    ;; scale color to show chemical concentration
-    [ set pcolor scale-color green chemical 0.1 5 ] ]
+  [ ifelse obstacle?
+    [ set pcolor brown ]  ;; Obstáculos são marrons
+    [ ifelse food > 0
+      [ if food-source-number = 1 [ set pcolor cyan ]
+        if food-source-number = 2 [ set pcolor sky  ]
+        if food-source-number = 3 [ set pcolor blue ] ]
+      ;; scale color to show chemical concentration
+      [ set pcolor scale-color green chemical 0.1 5 ]
+    ]
+  ]
 end
 
 ;;;;;;;;;;;;;;;;;;;;;
@@ -128,8 +130,14 @@ to go  ;; forever button
     [ return-to-nest ]       ;; carrying food? take it back to nest
 
     wiggle
+
     ;; Verifica se há obstáculo à frente antes de se mover
-    if not patch-ahead 1 = nobody and not [obstacle?] of patch-ahead 1 [
+    let p patch-ahead 1
+    ifelse p = nobody or [obstacle?] of p
+    [
+      rt 180  ;; Gira se não pode mover ou se há um obstáculo
+    ]
+    [
       fd 1
       ;; Perder energia ao se movimentar
       set energy energy - energia-perda
@@ -212,18 +220,24 @@ end
 to wiggle  ;; turtle procedure
   rt random 40
   lt random 40
-  if not can-move? 1 [ rt 180 ]
+
+  ;; Verificação básica se está na borda
+  if not can-move? 1 [
+    rt 180
+  ]
 end
 
 to-report nest-scent-at-angle [angle]
   let p patch-right-and-ahead angle 1
   if p = nobody [ report 0 ]
+  if [obstacle?] of p [ report 0 ]  ;; Não sente cheiro de ninho através de obstáculos
   report [nest-scent] of p
 end
 
 to-report chemical-scent-at-angle [angle]
   let p patch-right-and-ahead angle 1
   if p = nobody [ report 0 ]
+  if [obstacle?] of p [ report 0 ]  ;; Não sente químico em obstáculos
   report [chemical] of p
 end
 
@@ -240,6 +254,17 @@ to display-energy
       set label ""
     ]
   ]
+end
+
+;; Adicionar interface para controlar o número de obstáculos
+to update-obstacles
+  ask patches [
+    if obstacle? [
+      set obstacle? false
+      recolor-patch
+    ]
+  ]
+  setup-obstacles
 end
 @#$#@#$#@
 GRAPHICS-WINDOW
