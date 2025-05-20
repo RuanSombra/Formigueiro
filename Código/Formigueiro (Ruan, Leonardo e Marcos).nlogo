@@ -1,10 +1,19 @@
 patches-own [
-  chemical             ;; quantidade de feromônio químico
-  food                 ;; quantidade de comida (0, 1 ou 2)
-  nest?                ;; indica se é parte do ninho
-  nest-scent           ;; "cheiro" do ninho (maior perto do centro)
-  food-source-number   ;; identifica as fontes de comida (1, 2 ou 3)
-  obstacle?            ;; true se o patch for um obstáculo
+  chemical             ;; amount of chemical on this patch
+  food                 ;; amount of food on this patch (0, 1, or 2)
+  nest?                ;; true on nest patches, false elsewhere
+  nest-scent           ;; number that is higher closer to the nest
+  food-source-number   ;; number (1, 2, or 3) to identify the food sources
+]
+
+turtles-own [
+  energy      ;; energia da formiga
+]
+
+globals [
+  energy-inicial      ;; energia inicial das formigas
+  energia-ganho       ;; energia ganha ao entregar comida
+  energia-perda       ;; energia perdida ao se movimentar
 ]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;
@@ -12,143 +21,138 @@ patches-own [
 ;;;;;;;;;;;;;;;;;;;;;;;;
 
 to setup
-  clear-all ;; Limpa a simulação anterior, cria as formigas e configura o ambiente.
-  set-default-shape turtles "bug" ;; define o formato.
+  clear-all
+
+  ;; Definir valores de energia
+  set energy-inicial 200     ;; Energia inicial (ajuste conforme necessário)
+  set energia-ganho 10        ;; Energia ganha ao entregar comida
+  set energia-perda 0.5       ;; Energia perdida ao se movimentar
+  set show-energy? false
+
+  set-default-shape turtles "bug"
   create-turtles population
-  [ set size 2         ;; tamanho da formiga.
-    set color red  ]   ;; vermelho = não carrega comida.
-  setup-patches   ;; chamando a variável dos patches.
-  setup-obstacles ;; chamando a variável dos obstáculos.
-  reset-ticks
-  ask turtles with [ [obstacle?] of patch-here ] [
-    move-to one-of patches with [ not obstacle? and not nest? ]
+  [
+    set size 2               ;; easier to see
+    set color red            ;; red = not carrying food
+    set energy energy-inicial ;; definir energia inicial para cada formiga
   ]
+  setup-patches
+  reset-ticks
 end
 
-to setup-patches ;; Configura cada célula do mundo.
+to setup-patches
   ask patches
-  [ set pcolor green
-    setup-nest
+  [ setup-nest
     setup-food
     recolor-patch ]
 end
 
-to setup-nest  ;; procedimento de correção
-  ;; definir a variável nest? como true dentro do ninho, false em outros lugares
-  set nest? (distancexy 0 0) < 5 ;; calcula a distância do patch atual até as coordenadas (0,0) - o centro do mundo
-  ;; espalha um cheiro de ninho por todo o mundo -- mais forte perto do ninho
-  set nest-scent 200 - distancexy 0 0 ;; Cria um gradiente de cheiro que diminui com a distância do ninho
+to setup-nest  ;; patch procedure
+  ;; set nest? variable to true inside the nest, false elsewhere
+  set nest? (distancexy 0 0) < 5
+  ;; spread a nest-scent over the whole world -- stronger near the nest
+  set nest-scent 200 - distancexy 0 0
 end
 
-;; Este procedimento cria 3 fontes de comida em posições específicas do mundo:
-
-to setup-food  ;; procedimento de correção
-  ;; fonte 1: a direita.
+to setup-food  ;; patch procedure
+  ;; setup food source one on the right
   if (distancexy (0.6 * max-pxcor) 0) < 5
   [ set food-source-number 1 ]
-  ;; fonte 2: canto inferior esquerdo
+  ;; setup food source two on the lower-left
   if (distancexy (-0.6 * max-pxcor) (-0.6 * max-pycor)) < 5
   [ set food-source-number 2 ]
-  ;; fonte 3: canto superior direito
+  ;; setup food source three on the upper-left
   if (distancexy (-0.8 * max-pxcor) (0.8 * max-pycor)) < 5
   [ set food-source-number 3 ]
-  ;; quantidade de comida.
+  ;; set "food" at sources to either 1 or 2, randomly
   if food-source-number > 0
   [ set food one-of [1 2] ]
 end
-
-;; colorir o formigueiro.
-;; colorir as fontes de alimentos.
 
 to recolor-patch  ;; patch procedure
   ;; give color to nest and food sources
   ifelse nest?
   [ set pcolor violet ]
   [ ifelse food > 0
-    [ if food-source-number = 1 [ set pcolor grey ]
+    [ if food-source-number = 1 [ set pcolor cyan ]
       if food-source-number = 2 [ set pcolor sky  ]
       if food-source-number = 3 [ set pcolor blue ] ]
     ;; scale color to show chemical concentration
     [ set pcolor scale-color green chemical 0.1 5 ] ]
 end
 
-;; Adicione este procedimento para configurar os obstáculos
-
-to setup-obstacles
-  ask patches [
-    set obstacle? false
-  ]
-
-  ;; Opcional: criar paredes nas bordas
-
-  ask patches with [ pxcor = min-pxcor or pxcor = max-pxcor or pycor = min-pycor or pycor = max-pycor ] [
-    set obstacle? true
-    set pcolor black
-  ]
-
-  ;; Obstáculos internos: retângulo central
-
-  ask patches with [
-    abs pxcor < 5 and abs pycor < 5
-  ] [
-    set obstacle? true
-    set pcolor black
-  ]
-
-  ;; Obstáculos aleatórios (exemplo: 200 patches aleatórios)
-
-  let n 200
-  ask n-of n patches with [not obstacle? and not nest? and food = 0] [
-    set obstacle? true
-    set pcolor black
-  ]
-end
-
 ;;;;;;;;;;;;;;;;;;;;;
 ;;; Go procedures ;;;
 ;;;;;;;;;;;;;;;;;;;;;
 
-to go  ;; botão para sempre.
-  ask turtles
-  [ if who >= ticks [ stop ] ;; atrasar a partida inicial.
+to go  ;; forever button
+  ask turtles [
+    if who >= ticks [ stop ] ;; delay initial departure
+
     ifelse color = red
-    [ look-for-food  ]       ;; não tem comida? procure por ela.
-    [ return-to-nest ]       ;; achou comida? volte para o ninho.
+    [ look-for-food  ]       ;; not carrying food? look for it
+    [ return-to-nest ]       ;; carrying food? take it back to nest
+
     wiggle
-    fd 1 ]
+    fd 1
+
+    ;; Perder energia ao se movimentar
+    set energy energy - energia-perda
+  ]
+
+  ;; Verificar se alguma formiga morreu
+  check-death
+
+  ;; Movido para o nível do observer (fora do ask turtles)
+  display-energy
+
   diffuse chemical (diffusion-rate / 100)
-  ask patches
-  [ set chemical chemical * (100 - evaporation-rate) / 100  ;; evaporar lentamente o produto químico.
-    recolor-patch ]
+  ask patches [
+    set chemical chemical * (100 - evaporation-rate) / 100  ;; slowly evaporate chemical
+    recolor-patch
+  ]
   tick
 end
 
-to return-to-nest  ;; procedimento de tartaruga.
-  if not [obstacle?] of patch-here
-  [
-    set chemical chemical + 60
-  ]
-  if nest?
-  [ ;; largar a comida e sair novamente.
-    set color red
-    rt 180
+to check-death
+  ask turtles [
+    if energy <= 0 [
+      die  ;; A formiga morre quando fica sem energia
+    ]
   ]
 end
 
-to look-for-food  ;; procedimento de tartaruga.
+to return-to-nest  ;; turtle procedure
+  ifelse nest?
+  [ ;; Ganhar energia ao entregar comida no formigueiro
+    ;; Apenas ganha energia se estiver carregando comida (não vermelho)
+    if color != red [
+      set energy energy + energia-ganho
+    ]
+
+    ;; drop food and head out again
+    set color red
+    rt 180
+  ]
+  [
+    set chemical chemical + 60  ;; drop some chemical
+    uphill-nest-scent           ;; head toward the greatest value of nest-scent
+  ]
+end
+
+to look-for-food  ;; turtle procedure
   if food > 0
-  [ set color orange + 1     ;; pegar comida.
-    set food food - 1        ;; reduzir a fonte de alimento.
-    rt 180                   ;; vire-se.
+  [ set color orange + 1     ;; pick up food
+    set food food - 1        ;; and reduce the food source
+    rt 180                   ;; and turn around
     stop ]
-  ;; vá na direção onde o cheiro químico é mais forte.
+  ;; go in the direction where the chemical smell is strongest
   if (chemical >= 0.05) and (chemical < 2)
   [ uphill-chemical ]
 end
 
-;; cheire para a esquerda e para a direita e vá onde o cheiro é mais forte.
-
-to uphill-chemical  ;; procedimento de tartaruga.
+;; sniff left and right, and go where the strongest smell is
+to uphill-chemical  ;; turtle procedure
   let scent-ahead chemical-scent-at-angle   0
   let scent-right chemical-scent-at-angle  45
   let scent-left  chemical-scent-at-angle -45
@@ -158,14 +162,21 @@ to uphill-chemical  ;; procedimento de tartaruga.
     [ lt 45 ] ]
 end
 
-to wiggle  ;; procedimento de tartaruga.
+;; sniff left and right, and go where the strongest smell is
+to uphill-nest-scent  ;; turtle procedure
+  let scent-ahead nest-scent-at-angle   0
+  let scent-right nest-scent-at-angle  45
+  let scent-left  nest-scent-at-angle -45
+  if (scent-right > scent-ahead) or (scent-left > scent-ahead)
+  [ ifelse scent-right > scent-left
+    [ rt 45 ]
+    [ lt 45 ] ]
+end
+
+to wiggle  ;; turtle procedure
   rt random 40
   lt random 40
-
-  let p patch-ahead 1
-  if (p = nobody) or ([obstacle?] of p) or (not can-move? 1) [
-    rt 180 + random-float 90 - 45 ;; gira mais quando encontra obstáculo ou borda
-  ]
+  if not can-move? 1 [ rt 180 ]
 end
 
 to-report nest-scent-at-angle [angle]
@@ -180,9 +191,20 @@ to-report chemical-scent-at-angle [angle]
   report [chemical] of p
 end
 
-
-; Copyright 1997 Uri Wilensky.
-; See Info tab for full copyright and license.
+;; Procedimento para visualizar a energia (opcional)
+to display-energy
+  ifelse show-energy?
+  [
+    ask turtles [
+      set label energy
+    ]
+  ]
+  [
+    ask turtles [
+      set label ""
+    ]
+  ]
+end
 @#$#@#$#@
 GRAPHICS-WINDOW
 257
@@ -309,6 +331,17 @@ PENS
 "food-in-pile1" 1.0 0 -11221820 true "" "plotxy ticks sum [food] of patches with [pcolor = cyan]"
 "food-in-pile2" 1.0 0 -13791810 true "" "plotxy ticks sum [food] of patches with [pcolor = sky]"
 "food-in-pile3" 1.0 0 -13345367 true "" "plotxy ticks sum [food] of patches with [pcolor = blue]"
+
+SWITCH
+783
+34
+917
+67
+show-energy?
+show-energy?
+1
+1
+-1000
 
 @#$#@#$#@
 ## WHAT IS IT?
