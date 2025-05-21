@@ -5,17 +5,19 @@ patches-own [
   nest-scent           ;; number that is higher closer to the nest
   food-source-number   ;; number (1, 2, or 3) to identify the food sources
   obstacle?            ;; true se o patch for um obstáculo (pedra), false caso contrário
+  solo-type            ;; tipo do solo (0=normal, 1=areia, 2=lama, 3=fertilizado)
+  dificuldade-solo     ;; valor que representa a dificuldade de atravessar este solo
 ]
 
 turtles-own [
   energy      ;; energia da formiga
+  carrying-food? ;; está carregando comida?
 ]
 
 globals [
   energy-inicial      ;; energia inicial das formigas
   energia-ganho       ;; energia ganha ao entregar comida
   energia-perda       ;; energia perdida ao se movimentar
-  num-obstacles       ;; número de obstáculos no ambiente
 ]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;
@@ -28,9 +30,12 @@ to setup
   ;; Definir valores de energia
   set energy-inicial 1000    ;; Energia inicial (ajuste conforme necessário)
   set energia-ganho 10       ;; Energia ganha ao entregar comida
-  set energia-perda 1      ;; Energia perdida ao se movimentar
+  set energia-perda 1        ;; Energia perdida ao se movimentar
   set show-energy? false
-  set num-obstacles 10       ;; Número de obstáculos para adicionar (ajuste conforme necessário)
+
+  ;; Usar os valores definidos na interface
+  ;; Os sliders num-areia, num-lama, num-fertilizado e num-obstacles devem ser
+  ;; adicionados na interface do NetLogo
 
   set-default-shape turtles "bug"
   create-turtles population
@@ -38,19 +43,24 @@ to setup
     set size 2               ;; easier to see
     set color red            ;; red = not carrying food
     set energy energy-inicial ;; definir energia inicial para cada formiga
+    set carrying-food? false
   ]
   setup-patches
   setup-obstacles
+  setup-solos
   reset-ticks
 end
 
 to setup-patches
   ask patches
   [
-setup-nest
+    setup-nest
     setup-food
     set obstacle? false     ;; inicializa todos os patches como não-obstáculos
-    recolor-patch ]
+    set solo-type 0         ;; 0 = solo normal (padrão)
+    set dificuldade-solo 1  ;; dificuldade padrão
+    recolor-patch
+  ]
 end
 
 to setup-nest  ;; patch procedure
@@ -73,6 +83,44 @@ to setup-food  ;; patch procedure
   ;; set "food" at sources to either 1 or 2, randomly
   if food-source-number > 0
   [ set food one-of [1 2] ]
+end
+
+;; Procedimento para configurar diferentes tipos de solos
+to setup-solos
+  ;; Configurar solo de areia (amarelo, maior dificuldade de movimento)
+  create-solo-patches num-areia 1 2 yellow
+
+  ;; Configurar solo de lama (marrom-escuro, maior dificuldade e mais químico é depositado)
+  create-solo-patches num-lama 2 3 brown - 2
+
+  ;; Configurar solo fertilizado (verde claro, menos dificuldade e feromônios duram mais)
+  create-solo-patches num-fertilizado 3 0.5 lime
+end
+
+;; Procedimento para criar patches de solo de um determinado tipo
+to create-solo-patches [num tipo dificuldade cor-solo]
+  let current-patches 0
+
+  while [current-patches < num and current-patches < 100] [  ;; limitador para evitar loops infinitos
+    ;; Escolhe um patch aleatório
+    let potential-patch one-of patches
+
+    ;; Verifica se o patch não é um ninho, fonte de comida ou obstáculo
+    ask potential-patch [
+      if (not nest?) and (food-source-number = 0) and (not obstacle?) and (solo-type = 0) [
+        ;; Cria um grupo de patches do mesmo tipo de solo
+        ask patches in-radius (2 + random 3) [
+          ;; Evita sobreposição com áreas especiais
+          if (not nest?) and (food-source-number = 0) and (not obstacle?) and (solo-type = 0) [
+            set solo-type tipo
+            set dificuldade-solo dificuldade
+            recolor-patch
+          ]
+        ]
+        set current-patches current-patches + 1
+      ]
+    ]
+  ]
 end
 
 ;; Procedimento para configurar obstáculos (pedras)
@@ -102,17 +150,24 @@ to setup-obstacles
 end
 
 to recolor-patch  ;; patch procedure
-  ;; give color to nest, food sources and obstacles
+  ;; give color to nest, food sources, obstacles and different soil types
   ifelse nest?
   [ set pcolor violet ]
   [ ifelse obstacle?
-    [ set pcolor brown ]  ;; Obstáculos são marrons
+    [ set pcolor gray - 2 ]  ;; Obstáculos são cinza escuro
     [ ifelse food > 0
       [ if food-source-number = 1 [ set pcolor cyan ]
         if food-source-number = 2 [ set pcolor sky  ]
         if food-source-number = 3 [ set pcolor blue ] ]
-      ;; scale color to show chemical concentration
-      [ set pcolor scale-color green chemical 0.1 5 ]
+      [ ifelse solo-type > 0
+        [ ;; Colorir baseado no tipo de solo
+          if solo-type = 1 [ set pcolor yellow ]       ;; Areia
+          if solo-type = 2 [ set pcolor brown - 2 ]    ;; Lama
+          if solo-type = 3 [ set pcolor lime ]         ;; Solo fertilizado
+        ]
+        ;; scale color to show chemical concentration
+        [ set pcolor scale-color green chemical 0.1 5 ]
+      ]
     ]
   ]
 end
@@ -125,9 +180,9 @@ to go  ;; forever button
   ask turtles [
     if who >= ticks [ stop ] ;; delay initial departure
 
-    ifelse color = red
-    [ look-for-food  ]       ;; not carrying food? look for it
+    ifelse carrying-food?
     [ return-to-nest ]       ;; carrying food? take it back to nest
+    [ look-for-food  ]       ;; not carrying food? look for it
 
     wiggle
 
@@ -138,24 +193,69 @@ to go  ;; forever button
       rt 180  ;; Gira se não pode mover ou se há um obstáculo
     ]
     [
-      fd 1
-      ;; Perder energia ao se movimentar
-      set energy energy - energia-perda
+      ;; Movimento afetado pelo tipo de solo
+      let dificuldade [dificuldade-solo] of patch-here
+
+      ;; Probabilidade de conseguir se mover baseada na dificuldade do solo
+      if random-float 1.0 > (dificuldade - 1) / dificuldade [
+        fd 1
+      ]
+
+      ;; Perder energia ao se movimentar (mais em solos difíceis)
+      set energy energy - (energia-perda * dificuldade)
     ]
+
+    ;; Depositar feromônios conforme o tipo de solo
+    deposit-chemical
   ]
 
   ;; Verificar se alguma formiga morreu
   check-death
 
-  ;; Movido para o nível do observer (fora do ask turtles)
+  ;; Atualizar visualização da energia
   display-energy
 
+  ;; Difusão dos feromônios afetada pelo tipo de solo
+  diffuse-chemicals
+
+  tick
+end
+
+to deposit-chemical
+  ;; Quantidade de feromônio depositado varia conforme o tipo de solo
+  let solo-atual [solo-type] of patch-here
+  let chemical-amount 60  ;; quantidade base
+
+  ;; Ajusta a quantidade baseada no tipo de solo
+  if solo-atual = 2 [  ;; Solo de lama - mais químico permanece
+    set chemical-amount 80
+  ]
+  if solo-atual = 3 [  ;; Solo fertilizado - menos químico é necessário
+    set chemical-amount 40
+  ]
+
+  ;; Apenas deposita químico quando está retornando com comida
+  if carrying-food? [
+    ask patch-here [
+      set chemical chemical + chemical-amount
+    ]
+  ]
+end
+
+to diffuse-chemicals
+  ;; Difusão dos feromônios, considerando tipos de solo
   diffuse chemical (diffusion-rate / 100)
+
   ask patches [
-    set chemical chemical * (100 - evaporation-rate) / 100  ;; slowly evaporate chemical
+    ;; Solo fertilizado preserva mais os feromônios
+    let taxa-evaporacao evaporation-rate
+    if solo-type = 3 [
+      set taxa-evaporacao evaporation-rate * 0.7  ;; evaporação mais lenta
+    ]
+
+    set chemical chemical * (100 - taxa-evaporacao) / 100
     recolor-patch
   ]
-  tick
 end
 
 to check-death
@@ -169,9 +269,9 @@ end
 to return-to-nest  ;; turtle procedure
   ifelse nest?
   [ ;; Ganhar energia ao entregar comida no formigueiro
-    ;; Apenas ganha energia se estiver carregando comida (não vermelho)
-    if color != red [
+    if carrying-food? [
       set energy energy + energia-ganho
+      set carrying-food? false
     ]
 
     ;; drop food and head out again
@@ -179,17 +279,19 @@ to return-to-nest  ;; turtle procedure
     rt 180
   ]
   [
-    set chemical chemical + 60  ;; drop some chemical
-    uphill-nest-scent           ;; head toward the greatest value of nest-scent
+    uphill-nest-scent  ;; head toward the greatest value of nest-scent
   ]
 end
 
 to look-for-food  ;; turtle procedure
-  if food > 0
-  [ set color orange + 1     ;; pick up food
+  if food > 0 [
+    set color orange + 1     ;; pick up food
     set food food - 1        ;; and reduce the food source
+    set carrying-food? true
     rt 180                   ;; and turn around
-    stop ]
+    stop
+  ]
+
   ;; go in the direction where the chemical smell is strongest
   if (chemical >= 0.05) and (chemical < 2)
   [ uphill-chemical ]
@@ -241,7 +343,7 @@ to-report chemical-scent-at-angle [angle]
   report [chemical] of p
 end
 
-;; Procedimento para visualizar a energia (opcional)
+;; Procedimento para visualizar a energia
 to display-energy
   ifelse show-energy?
   [
@@ -256,7 +358,7 @@ to display-energy
   ]
 end
 
-;; Adicionar interface para controlar o número de obstáculos
+;; Controle de obstáculos
 to update-obstacles
   ask patches [
     if obstacle? [
@@ -266,12 +368,27 @@ to update-obstacles
   ]
   setup-obstacles
 end
+
+;; Controle para mudar o número de patches de cada tipo de solo
+to update-solos
+  ;; Limpar todos os tipos de solo
+  ask patches [
+    if solo-type > 0 [
+      set solo-type 0
+      set dificuldade-solo 1
+      recolor-patch
+    ]
+  ]
+
+  ;; Recriar os solos
+  setup-solos
+end
 @#$#@#$#@
 GRAPHICS-WINDOW
-257
-10
-762
-516
+527
+69
+1032
+575
 -1
 -1
 7.0
@@ -295,10 +412,10 @@ ticks
 30.0
 
 BUTTON
-46
-71
-126
-104
+293
+246
+373
+279
 NIL
 setup
 NIL
@@ -312,10 +429,10 @@ NIL
 1
 
 SLIDER
-31
-106
-221
-139
+1251
+70
+1441
+103
 diffusion-rate
 diffusion-rate
 0.0
@@ -327,10 +444,10 @@ NIL
 HORIZONTAL
 
 SLIDER
-31
-141
-221
-174
+1250
+117
+1440
+150
 evaporation-rate
 evaporation-rate
 0.0
@@ -342,10 +459,10 @@ NIL
 HORIZONTAL
 
 BUTTON
-136
-71
-211
-104
+383
+246
+458
+279
 NIL
 go
 T
@@ -359,25 +476,25 @@ NIL
 0
 
 SLIDER
-31
-36
-221
-69
+1048
+71
+1238
+104
 population
 population
 0.0
 200.0
-125.0
+124.0
 1.0
 1
 NIL
 HORIZONTAL
 
 PLOT
-5
-197
-248
-476
+246
+293
+489
+572
 Food in each pile
 time
 food
@@ -394,15 +511,75 @@ PENS
 "food-in-pile3" 1.0 0 -13345367 true "" "plotxy ticks sum [food] of patches with [pcolor = blue]"
 
 SWITCH
-783
-34
-917
-67
+314
+204
+448
+237
 show-energy?
 show-energy?
 1
 1
 -1000
+
+SLIDER
+1049
+113
+1221
+146
+num-areia
+num-areia
+0
+20
+3.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+1050
+156
+1222
+189
+num-lama
+num-lama
+0
+20
+3.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+1050
+200
+1222
+233
+num-fertilizado
+num-fertilizado
+0
+20
+3.0
+1
+1
+NIL
+HORIZONTAL
+
+SLIDER
+1050
+248
+1222
+281
+num-obstacles
+num-obstacles
+0
+20
+10.0
+1
+1
+NIL
+HORIZONTAL
 
 @#$#@#$#@
 ## WHAT IS IT?
