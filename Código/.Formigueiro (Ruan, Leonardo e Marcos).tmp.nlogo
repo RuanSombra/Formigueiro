@@ -10,14 +10,37 @@ patches-own [
 ]
 
 turtles-own [
-  energy      ;; energia da formiga
-  carrying-food? ;; está carregando comida?
+  energy               ;; energia da formiga/predador
+  carrying-food?       ;; está carregando comida?
+  ant-type            ;; tipo da formiga: "queen", "worker", "ninja", "tank", "mirmecobio"
+  patrol-angle        ;; ângulo para patrulha dos tanks
+  target-enemy        ;; inimigo sendo perseguido (para ninjas)
+  food-delivered      ;; quantidade de comida entregue (para rainha)
+  hunt-cooldown       ;; tempo de recarga entre ataques do mirmecóbio
+  fleeing?            ;; se está fugindo após ser atacado
+  flee-timer          ;; contador para tempo de fuga
+  last-damage-tick    ;; último tick em que recebeu dano (para evitar spam de ataques)
 ]
 
 globals [
   energy-inicial      ;; energia inicial das formigas
   energia-ganho       ;; energia ganha ao entregar comida
   energia-perda       ;; energia perdida ao se movimentar
+  queen-food-count    ;; contador de comida da rainha
+  reproduction-threshold ;; limite para reprodução
+  patrol-radius       ;; raio de patrulha dos tanks
+  mirmecobio-spawn-rate ;; taxa de aparição de mirmecóbios
+  mirmecobio-count    ;; contador de mirmecóbios ativos
+;  population          ;; população inicial (variável necessária)
+;  num-obstacles       ;; número de obstáculos
+;  num-areia           ;; número de patches de areia
+;  num-lama            ;; número de patches de lama
+;  num-fertilizado     ;; número de patches fertilizados
+;  show-energy?        ;; mostrar energia das formigas
+;  diffusion-rate      ;; taxa de difusão química
+;  evaporation-rate    ;; taxa de evaporação química
+  total-food-collected ;; contador total de comida coletada
+  game-over?          ;; flag para indicar fim de jogo
 ]
 
 ;;;;;;;;;;;;;;;;;;;;;;;;
@@ -27,24 +50,66 @@ globals [
 to setup
   clear-all
 
-  ;; Definir valores de energia
-  set energy-inicial 1000    ;; Energia inicial (ajuste conforme necessário)
-  set energia-ganho 10       ;; Energia ganha ao entregar comida
-  set energia-perda 1        ;; Energia perdida ao se movimentar
-  set show-energy? false
+  ;; Definir valores padrão se não definidos pela interface
+  if population = 0 [ set population 20 ]
+  if num-obstacles = 0 [ set num-obstacles 5 ]
+  if num-areia = 0 [ set num-areia 3 ]
+  if num-lama = 0 [ set num-lama 3 ]
+  if num-fertilizado = 0 [ set num-fertilizado 2 ]
+  if diffusion-rate = 0 [ set diffusion-rate 50 ]
+  if evaporation-rate = 0 [ set evaporation-rate 10 ]
 
-  ;; Usar os valores definidos na interface
-  ;; Os sliders num-areia, num-lama, num-fertilizado e num-obstacles devem ser
-  ;; adicionados na interface do NetLogo
+  ;; Definir valores de energia e reprodução
+  set energy-inicial 1000
+  set energia-ganho 15
+  set energia-perda 1
+  set show-energy? false
+  set queen-food-count 0
+  set reproduction-threshold 50  ;; Rainha precisa de 50 unidades de comida para reproduzir
+  set patrol-radius 8
+  set mirmecobio-spawn-rate 0.1  ;; 0.1% de chance por tick de aparecer um mirmecóbio
+  set mirmecobio-count 0
+  set total-food-collected 0
+  set game-over? false
 
   set-default-shape turtles "bug"
-  create-turtles population
-  [
-    set size 2               ;; easier to see
-    set color red            ;; red = not carrying food
-    set energy energy-inicial ;; definir energia inicial para cada formiga
+
+  ;; Criar a rainha primeiro
+  create-turtles 1 [
+    set ant-type "queen"
+    set size 3
+    set color pink
+    set energy energy-inicial * 2  ;; Rainha tem mais energia
     set carrying-food? false
+    set food-delivered 0
+    set hunt-cooldown 0
+    set fleeing? false
+    set flee-timer 0
+    set last-damage-tick 0
+    set target-enemy nobody
+    set patrol-angle 0
+    ;; Posicionar a rainha no centro do ninho
+    setxy 0 0
   ]
+
+  ;; Criar população inicial de operárias
+  create-turtles (population - 1) [
+    set ant-type "worker"
+    set size 2
+    set color red
+    set energy energy-inicial
+    set carrying-food? false
+    set food-delivered 0
+    set hunt-cooldown 0
+    set fleeing? false
+    set flee-timer 0
+    set last-damage-tick 0
+    set target-enemy nobody
+    set patrol-angle 0
+    ;; Posicionar perto do ninho
+    setxy (random 10 - 5) (random 10 - 5)
+  ]
+
   setup-patches
   setup-obstacles
   setup-solos
@@ -52,25 +117,27 @@ to setup
 end
 
 to setup-patches
-  ask patches
-  [
+  ask patches [
     setup-nest
     setup-food
-    set obstacle? false     ;; inicializa todos os patches como não-obstáculos
-    set solo-type 0         ;; 0 = solo normal (padrão)
-    set dificuldade-solo 1  ;; dificuldade padrão
+    set obstacle? false
+    set solo-type 0
+    set dificuldade-solo 1
+    set chemical 0
     recolor-patch
   ]
 end
 
 to setup-nest  ;; patch procedure
-  ;; set nest? variable to true inside the nest, false elsewhere
   set nest? (distancexy 0 0) < 5
-  ;; spread a nest-scent over the whole world -- stronger near the nest
   set nest-scent 200 - distancexy 0 0
 end
 
 to setup-food  ;; patch procedure
+  ;; inicializar food-source-number como 0
+  set food-source-number 0
+  set food 0
+
   ;; setup food source one on the right
   if (distancexy (0.6 * max-pxcor) 0) < 5
   [ set food-source-number 1 ]
@@ -85,32 +152,20 @@ to setup-food  ;; patch procedure
   [ set food one-of [1 2] ]
 end
 
-;; Procedimento para configurar diferentes tipos de solos
 to setup-solos
-  ;; Configurar solo de areia (amarelo, maior dificuldade de movimento)
   create-solo-patches num-areia 1 2 yellow
-
-  ;; Configurar solo de lama (marrom-escuro, maior dificuldade e mais químico é depositado)
-  create-solo-patches num-lama 2 3 brown - 2
-
-  ;; Configurar solo fertilizado (verde claro, menos dificuldade e feromônios duram mais)
+  create-solo-patches num-lama 2 3 (brown - 2)
   create-solo-patches num-fertilizado 3 0.5 lime
 end
 
-;; Procedimento para criar patches de solo de um determinado tipo
 to create-solo-patches [num tipo dificuldade cor-solo]
   let current-patches 0
-
-  while [current-patches < num and current-patches < 100] [  ;; limitador para evitar loops infinitos
-    ;; Escolhe um patch aleatório
+  let attempts 0  ;; Contador para evitar loop infinito
+  while [current-patches < num and attempts < 200] [
     let potential-patch one-of patches
-
-    ;; Verifica se o patch não é um ninho, fonte de comida ou obstáculo
     ask potential-patch [
       if (not nest?) and (food-source-number = 0) and (not obstacle?) and (solo-type = 0) [
-        ;; Cria um grupo de patches do mesmo tipo de solo
         ask patches in-radius (2 + random 3) [
-          ;; Evita sobreposição com áreas especiais
           if (not nest?) and (food-source-number = 0) and (not obstacle?) and (solo-type = 0) [
             set solo-type tipo
             set dificuldade-solo dificuldade
@@ -120,24 +175,18 @@ to create-solo-patches [num tipo dificuldade cor-solo]
         set current-patches current-patches + 1
       ]
     ]
+    set attempts attempts + 1
   ]
 end
 
-;; Procedimento para configurar obstáculos (pedras)
 to setup-obstacles
   let current-obstacles 0
-
-  ;; Continua adicionando obstáculos até atingir o número desejado
-  while [current-obstacles < num-obstacles] [
-    ;; Escolhe um patch aleatório
+  let attempts 0  ;; Contador para evitar loop infinito
+  while [current-obstacles < num-obstacles and attempts < 100] [
     let potential-patch one-of patches
-
-    ;; Verifica se o patch NÃO é um ninho ou fonte de comida
     ask potential-patch [
       if (not nest?) and (food-source-number = 0) and (not obstacle?) [
-        ;; Cria um grupo de patches de obstáculos
         ask patches in-radius (1 + random 3) [
-          ;; Evita criar obstáculos no ninho ou fontes de comida
           if (not nest?) and (food-source-number = 0) and (not obstacle?) [
             set obstacle? true
             recolor-patch
@@ -146,26 +195,24 @@ to setup-obstacles
         set current-obstacles current-obstacles + 1
       ]
     ]
+    set attempts attempts + 1
   ]
 end
 
 to recolor-patch  ;; patch procedure
-  ;; give color to nest, food sources, obstacles and different soil types
   ifelse nest?
   [ set pcolor violet ]
   [ ifelse obstacle?
-    [ set pcolor gray - 2 ]  ;; Obstáculos são cinza escuro
+    [ set pcolor gray - 2 ]
     [ ifelse food > 0
       [ if food-source-number = 1 [ set pcolor cyan ]
         if food-source-number = 2 [ set pcolor sky  ]
         if food-source-number = 3 [ set pcolor blue ] ]
       [ ifelse solo-type > 0
-        [ ;; Colorir baseado no tipo de solo
-          if solo-type = 1 [ set pcolor yellow ]       ;; Areia
-          if solo-type = 2 [ set pcolor brown - 2 ]    ;; Lama
-          if solo-type = 3 [ set pcolor lime ]         ;; Solo fertilizado
+        [ if solo-type = 1 [ set pcolor yellow ]
+          if solo-type = 2 [ set pcolor brown - 2 ]
+          if solo-type = 3 [ set pcolor lime ]
         ]
-        ;; scale color to show chemical concentration
         [ set pcolor scale-color green chemical 0.1 5 ]
       ]
     ]
@@ -176,66 +223,488 @@ end
 ;;; Go procedures ;;;
 ;;;;;;;;;;;;;;;;;;;;;
 
-to go  ;; forever button
-  ask turtles [
-    if who >= ticks [ stop ] ;; delay initial departure
+to go
+  if game-over? [ stop ]
 
-    ifelse carrying-food?
-    [ return-to-nest ]       ;; carrying food? take it back to nest
-    [ look-for-food  ]       ;; not carrying food? look for it
-
-    wiggle
-
-    ;; Verifica se há obstáculo à frente antes de se mover
-    let p patch-ahead 1
-    ifelse p = nobody or [obstacle?] of p
-    [
-      rt 180  ;; Gira se não pode mover ou se há um obstáculo
-    ]
-    [
-      ;; Movimento afetado pelo tipo de solo
-      let dificuldade [dificuldade-solo] of patch-here
-
-      ;; Probabilidade de conseguir se mover baseada na dificuldade do solo
-      if random-float 1.0 > (dificuldade - 1) / dificuldade [
-        fd 1
-      ]
-
-      ;; Perder energia ao se movimentar (mais em solos difíceis)
-      set energy energy - (energia-perda * dificuldade)
-    ]
-
-    ;; Depositar feromônios conforme o tipo de solo
-    deposit-chemical
+  ;; Verificar se ainda há formigas vivas
+  if not any? turtles with [ant-type != "mirmecobio"] [
+    set game-over? true
+    user-message "Todas as formigas morreram! Fim de jogo."
+    stop
   ]
 
-  ;; Verificar se alguma formiga morreu
+  ;; Chance de aparecer um mirmecóbio
+  if random-float 100 < mirmecobio-spawn-rate and mirmecobio-count < 3 [
+    spawn-mirmecobio
+  ]
+
+  ask turtles [
+    ;; Comportamento específico por tipo de formiga/predador
+    if ant-type = "queen" [ queen-behavior ]
+    if ant-type = "worker" [ worker-behavior ]
+    if ant-type = "ninja" [ ninja-behavior ]
+    if ant-type = "tank" [ tank-behavior ]
+    if ant-type = "mirmecobio" [ mirmecobio-behavior ]
+
+    ;; Consumo de energia (varia por tipo)
+    consume-energy
+  ]
+
   check-death
-
-  ;; Atualizar visualização da energia
   display-energy
-
-  ;; Difusão dos feromônios afetada pelo tipo de solo
   diffuse-chemicals
-
+  replenish-food  ;; Adicionar reposição gradual de comida
   tick
 end
 
+;; Comportamento da Rainha
+to queen-behavior
+  ;; A rainha fica no ninho esperando comida
+  if not nest? [
+    ;; Se não estiver no ninho, volta para lá
+    uphill-nest-scent
+    move-if-possible
+  ]
+
+  ;; Verifica se pode reproduzir
+  if queen-food-count >= reproduction-threshold [
+    reproduce-ants
+    set queen-food-count queen-food-count - reproduction-threshold
+  ]
+
+  ;; A rainha se move muito pouco, apenas ajusta posição no ninho
+  if nest? and random 20 = 0 [  ;; Reduzido movimento da rainha
+    rt random 60 - 30
+    if can-move? 1 and patch-ahead 1 != nobody and [nest?] of patch-ahead 1 [
+      fd 1
+    ]
+  ]
+end
+
+;; Comportamento da Operária (similar ao original)
+to worker-behavior
+  ifelse carrying-food?
+  [ return-to-nest ]
+  [ look-for-food ]
+
+  wiggle
+  move-if-possible
+  deposit-chemical
+end
+
+;; Procedimento para criar mirmecóbio
+to spawn-mirmecobio
+  ;; Criar mirmecóbio em uma borda aleatória do mundo
+  let spawn-x 0
+  let spawn-y 0
+
+  let edge random 4
+  if edge = 0 [ ;; borda superior
+    set spawn-x random-float (2 * max-pxcor) - max-pxcor
+    set spawn-y max-pycor - 2
+  ]
+  if edge = 1 [ ;; borda direita
+    set spawn-x max-pxcor - 2
+    set spawn-y random-float (2 * max-pycor) - max-pycor
+  ]
+  if edge = 2 [ ;; borda inferior
+    set spawn-x random-float (2 * max-pxcor) - max-pxcor
+    set spawn-y min-pycor + 2
+  ]
+  if edge = 3 [ ;; borda esquerda
+    set spawn-x min-pxcor + 2
+    set spawn-y random-float (2 * max-pycor) - max-pycor
+  ]
+
+  create-turtles 1 [
+    set ant-type "mirmecobio"
+    set shape "mirmecóbio"  ;; Usar forma de pessoa para representar o predador
+    set size 10
+    set color brown
+    set energy 2000  ;; Mirmecóbio tem muita energia
+    set carrying-food? false
+    set hunt-cooldown 0
+    set fleeing? false
+    set flee-timer 0
+    set last-damage-tick 0
+    set target-enemy nobody
+    set food-delivered 0
+    set patrol-angle 0
+    setxy spawn-x spawn-y
+  ]
+
+  set mirmecobio-count mirmecobio-count + 1
+end
+
+;; Comportamento do Mirmecóbio
+to mirmecobio-behavior
+  ;; Reduzir cooldown
+  if hunt-cooldown > 0 [ set hunt-cooldown hunt-cooldown - 1 ]
+  if flee-timer > 0 [ set flee-timer flee-timer - 1 ]
+
+  ;; Se está fugindo, continua na direção oposta às formigas
+  if fleeing? [
+    if flee-timer <= 0 [
+      set fleeing? false
+      set color brown  ;; Volta à cor normal
+    ]
+
+    ;; Foge das formigas defensoras
+    let defenders turtles in-radius 10 with [ant-type = "ninja" or ant-type = "tank"]
+    if any? defenders [
+      let nearest-defender min-one-of defenders [distance myself]
+      face nearest-defender
+      rt 180  ;; Vira na direção oposta
+    ]
+
+    move-predator
+    stop
+  ]
+
+  ;; Procurar formigas próximas para caçar
+  let nearby-ants turtles in-radius 8 with [ant-type != "mirmecobio"]
+
+  if any? nearby-ants [
+    ;; Priorizar operárias, depois ninjas, depois tanks, rainha por último
+    let target nobody
+
+    let workers nearby-ants with [ant-type = "worker"]
+    let ninjas nearby-ants with [ant-type = "ninja"]
+    let tanks nearby-ants with [ant-type = "tank"]
+    let queens nearby-ants with [ant-type = "queen"]
+
+    if any? workers [ set target one-of workers ]
+    if target = nobody and any? ninjas [ set target one-of ninjas ]
+    if target = nobody and any? tanks [ set target one-of tanks ]
+    if target = nobody and any? queens [ set target one-of queens ]
+
+    if target != nobody [
+      set target-enemy target
+      face target-enemy
+
+      ;; Atacar se estiver próximo o suficiente e sem cooldown
+      if distance target-enemy <= 2 and hunt-cooldown = 0 [
+        attack-ant target-enemy
+        set hunt-cooldown 20  ;; Cooldown de 20 ticks entre ataques
+      ]
+    ]
+  ]
+
+  ;; Se tem um alvo, persegue
+  if target-enemy != nobody [
+    if is-turtle? target-enemy [ ;; Verifica se o alvo ainda existe
+      face target-enemy
+      move-predator
+      if distance target-enemy > 15 [
+        set target-enemy nobody  ;; Desiste se muito longe
+      ]
+    ]
+    if not is-turtle? target-enemy [
+      set target-enemy nobody
+    ]
+  ]
+
+  ;; Se não tem alvo, move-se em direção ao ninho
+  if target-enemy = nobody [
+    facexy 0 0
+    move-predator
+  ]
+
+  ;; Verificar se está sendo atacado por defensores
+  let attackers turtles in-radius 3 with [ant-type = "ninja" or ant-type = "tank"]
+  if any? attackers and random 10 < 3 and (ticks - last-damage-tick) > 5 [  ;; 30% chance de fugir quando atacado
+    set fleeing? true
+    set flee-timer 50  ;; Foge por 50 ticks
+    set color brown + 2  ;; Muda cor para indicar que está fugindo
+    set energy energy - 100  ;; Perde energia quando atacado
+    set last-damage-tick ticks
+  ]
+end
+
+;; Movimento do predador
+to move-predator
+  let p patch-ahead 1
+  ifelse p = nobody or [obstacle?] of p
+  [
+    rt random 90 - 45
+  ]
+  [
+    ;; Mirmecóbio move mais devagar em alguns tipos de solo
+    let dificuldade [dificuldade-solo] of patch-here
+    if random-float 1.0 > (dificuldade - 0.5) / dificuldade [
+      fd 1
+    ]
+  ]
+end
+
+;; Ataque do mirmecóbio
+to attack-ant [victim]
+  if victim != nobody and is-turtle? victim [
+    ask victim [
+      ;; Evitar spam de ataques
+      if (ticks - last-damage-tick) > 3 [
+        ;; Formiga perde muita energia quando atacada
+        set energy energy - 200
+        set last-damage-tick ticks
+
+        ;; Efeito visual do ataque
+        set color white
+
+        ;; Se for operária carregando comida, perde a comida
+        if ant-type = "worker" and carrying-food? [
+          set carrying-food? false
+          set color red
+          ;; A comida volta para o patch
+          ask patch-here [
+            if food-source-number > 0 [
+              set food food + 1
+            ]
+          ]
+        ]
+      ]
+    ]
+
+    ;; Mirmecóbio ganha energia ao atacar
+    set energy energy + 50
+  ]
+end
+
+;; Comportamento do Ninja
+to ninja-behavior
+  ;; Procurar predadores próximos
+  let nearby-predators turtles in-radius 15 with [ant-type = "mirmecobio"]
+
+  if any? nearby-predators [
+    ;; Perseguir o predador mais próximo
+    let closest-predator min-one-of nearby-predators [distance myself]
+    set target-enemy closest-predator
+    face target-enemy
+
+    ;; Atacar se próximo
+    if distance target-enemy <= 2 [
+      attack-predator target-enemy
+    ]
+  ]
+
+  ;; Se não tem alvo, patrulha aleatoriamente ou ajuda operárias
+  if target-enemy = nobody or not is-turtle? target-enemy [
+    ;; Ocasionalmente ajuda operárias em perigo
+    let workers-in-danger turtles in-radius 10 with [ant-type = "worker" and energy < 300]
+    if any? workers-in-danger and random 5 = 0 [
+      let worker-to-help one-of workers-in-danger
+      face worker-to-help
+    ]
+    if not any? workers-in-danger [
+      ;; Movimento mais rápido e errático
+      rt random 90 - 45
+      if random 3 = 0 [ rt 180 ]  ;; Mudança brusca de direção ocasional
+    ]
+    set target-enemy nobody
+  ]
+
+  wiggle
+  move-if-possible
+end
+
+;; Comportamento do Tank
+to tank-behavior
+  ;; Verificar se há mirmecóbios próximos para defender
+  let nearby-predators turtles in-radius 10 with [ant-type = "mirmecobio"]
+
+  if any? nearby-predators [
+    ;; Posicionar-se entre o predador e o ninho
+    let closest-predator min-one-of nearby-predators [distance myself]
+
+    ;; Calcular posição defensiva entre predador e ninho
+    let predator-x [xcor] of closest-predator
+    let predator-y [ycor] of closest-predator
+    let defend-x (predator-x + 0) / 2  ;; Ponto médio entre predador e ninho (0,0)
+    let defend-y (predator-y + 0) / 2
+
+    facexy defend-x defend-y
+
+    ;; Atacar se o predador estiver muito próximo
+    if distance closest-predator <= 3 [
+      face closest-predator
+      attack-predator closest-predator
+    ]
+
+    move-if-possible
+  ]
+
+  ;; Se não há predadores, fazer patrulha normal ao redor do ninho
+  if not any? nearby-predators [
+    ;; Se está muito longe do ninho, volta
+    if distancexy 0 0 > patrol-radius * 1.5 [
+      facexy 0 0
+      move-if-possible
+      stop
+    ]
+
+    ;; Se está muito perto do ninho, se afasta um pouco
+    if distancexy 0 0 < patrol-radius * 0.5 [
+      rt 180
+      move-if-possible
+      stop
+    ]
+
+    ;; Patrulha circular
+    set patrol-angle patrol-angle + 15
+    if patrol-angle >= 360 [ set patrol-angle 0 ]
+
+    let target-x patrol-radius * cos(patrol-angle)
+    let target-y patrol-radius * sin(patrol-angle)
+
+    facexy target-x target-y
+    move-if-possible
+  ]
+end
+
+;; Ataque de ninjas e tanks contra predadores
+to attack-predator [predator]
+  if predator != nobody and is-turtle? predator [
+    ask predator [
+      ;; Evitar spam de ataques
+      if (ticks - last-damage-tick) > 3 [
+        ;; Predador perde energia quando atacado
+        let damage 50
+        if [ant-type] of myself = "tank" [ set damage 75 ]  ;; Tanks causam mais dano
+
+        set energy energy - damage
+        set last-damage-tick ticks
+
+        ;; Chance de fazer o predador fugir
+        if random 10 < 4 [  ;; 40% chance
+          set fleeing? true
+          set flee-timer 30
+          set color brown + 2
+        ]
+      ]
+    ]
+
+    ;; Formiga atacante também perde um pouco de energia
+    set energy energy - 10
+  ]
+end
+
+;; Procedimento para reprodução da rainha
+to reproduce-ants
+  let num-new-ants random 5 + 2  ;; Entre 2 e 6 novas formigas
+
+  repeat num-new-ants [
+    ;; Determina o tipo da nova formiga aleatoriamente
+    let new-type "worker"  ;; padrão
+    let rand-num random 100
+
+    if rand-num < 60 [ set new-type "worker" ]    ;; 60% operárias
+    if rand-num >= 60 and rand-num < 80 [ set new-type "ninja" ]  ;; 20% ninjas
+    if rand-num >= 80 [ set new-type "tank" ]     ;; 20% tanks
+
+    ;; Criar nova formiga perto da rainha
+    hatch 1 [
+      set ant-type new-type
+      set carrying-food? false
+      set food-delivered 0
+      set energy energy-inicial
+      set hunt-cooldown 0
+      set fleeing? false
+      set flee-timer 0
+      set last-damage-tick 0
+      set target-enemy nobody
+
+      ;; Configurar aparência por tipo
+      if ant-type = "worker" [
+        set color red
+        set size 2
+      ]
+      if ant-type = "ninja" [
+        set color black
+        set size 1.5
+      ]
+      if ant-type = "tank" [
+        set color blue
+        set size 2.5
+        set patrol-angle random 360
+      ]
+
+      ;; Posicionar perto do ninho
+      setxy (random 6 - 3) (random 6 - 3)
+    ]
+  ]
+end
+
+;; Modificação do procedimento de retorno ao ninho para alimentar a rainha
+to return-to-nest
+  ifelse nest?
+  [
+    if carrying-food? [
+      ;; Entregar comida para a rainha
+      set carrying-food? false
+      set color red
+      set energy energy + energia-ganho
+
+      ;; Aumentar contador de comida da rainha
+      set queen-food-count queen-food-count + 1
+      set total-food-collected total-food-collected + 1
+    ]
+    rt 180
+  ]
+  [
+    uphill-nest-scent
+  ]
+end
+
+to look-for-food
+  if food > 0 [
+    set color orange + 1
+    set food food - 1
+    set carrying-food? true
+    rt 180
+    stop
+  ]
+
+  if (chemical >= 0.05) and (chemical < 2)
+  [ uphill-chemical ]
+end
+
+;; Procedimento auxiliar para movimento
+to move-if-possible
+  let p patch-ahead 1
+  ifelse p = nobody or [obstacle?] of p
+  [
+    rt random 180  ;; Mudança para evitar ficar preso
+  ]
+  [
+    let dificuldade [dificuldade-solo] of patch-here
+    if random-float 1.0 > (dificuldade - 1) / dificuldade [
+      fd 1
+    ]
+  ]
+end
+
+;; Consumo de energia por tipo
+to consume-energy
+  let base-consumption energia-perda
+
+  if ant-type = "queen" [ set base-consumption energia-perda * 0.5 ]        ;; Rainha consome menos
+  if ant-type = "worker" [ set base-consumption energia-perda ]             ;; Consumo normal
+  if ant-type = "ninja" [ set base-consumption energia-perda * 1.5 ]        ;; Ninja consome mais
+  if ant-type = "tank" [ set base-consumption energia-perda * 1.2 ]         ;; Tank consome um pouco mais
+  if ant-type = "mirmecobio" [ set base-consumption energia-perda * 2 ]     ;; Mirmecóbio consome mais
+
+  let dificuldade [dificuldade-solo] of patch-here
+  set energy energy - (base-consumption * dificuldade)
+end
+
 to deposit-chemical
-  ;; Quantidade de feromônio depositado varia conforme o tipo de solo
   let solo-atual [solo-type] of patch-here
-  let chemical-amount 60  ;; quantidade base
+  let chemical-amount 60
 
-  ;; Ajusta a quantidade baseada no tipo de solo
-  if solo-atual = 2 [  ;; Solo de lama - mais químico permanece
-    set chemical-amount 80
-  ]
-  if solo-atual = 3 [  ;; Solo fertilizado - menos químico é necessário
-    set chemical-amount 40
-  ]
+  if solo-atual = 2 [ set chemical-amount 80 ]
+  if solo-atual = 3 [ set chemical-amount 40 ]
 
-  ;; Apenas deposita químico quando está retornando com comida
-  if carrying-food? [
+  ;; Apenas operárias depositam químico quando retornam com comida
+  if ant-type = "worker" and carrying-food? [
     ask patch-here [
       set chemical chemical + chemical-amount
     ]
@@ -243,73 +712,50 @@ to deposit-chemical
 end
 
 to diffuse-chemicals
-  ;; Difusão dos feromônios, considerando tipos de solo
   diffuse chemical (diffusion-rate / 100)
-
   ask patches [
-    ;; Solo fertilizado preserva mais os feromônios
     let taxa-evaporacao evaporation-rate
     if solo-type = 3 [
-      set taxa-evaporacao evaporation-rate * 0.7  ;; evaporação mais lenta
+      set taxa-evaporacao evaporation-rate * 0.7
     ]
-
     set chemical chemical * (100 - taxa-evaporacao) / 100
     recolor-patch
+  ]
+end
+
+;; Novo procedimento para reposição gradual de comida
+to replenish-food
+  if random 100 < 2 [  ;; 2% de chance por tick
+    ask patches with [food-source-number > 0 and food < 2] [
+      if random 10 < 3 [  ;; 30% de chance para cada fonte
+        set food food + 1
+        recolor-patch
+      ]
+    ]
   ]
 end
 
 to check-death
   ask turtles [
     if energy <= 0 [
-      die  ;; A formiga morre quando fica sem energia
+      ;; Se a rainha morrer, o jogo acaba
+      if ant-type = "queen" [
+        set game-over? true
+        user-message "A Rainha morreu! A colônia não pode continuar."
+        stop
+      ]
+
+      ;; Se um mirmecóbio morrer, diminui o contador
+      if ant-type = "mirmecobio" [
+        set mirmecobio-count mirmecobio-count - 1
+      ]
+
+      die
     ]
   ]
 end
 
-to return-to-nest  ;; turtle procedure
-  ifelse nest?
-  [ ;; Ganhar energia ao entregar comida no formigueiro
-    if carrying-food? [
-      set energy energy + energia-ganho
-      set carrying-food? false
-    ]
-
-    ;; drop food and head out again
-    set color red
-    rt 180
-  ]
-  [
-    uphill-nest-scent  ;; head toward the greatest value of nest-scent
-  ]
-end
-
-to look-for-food  ;; turtle procedure
-  if food > 0 [
-    set color orange + 1     ;; pick up food
-    set food food - 1        ;; and reduce the food source
-    set carrying-food? true
-    rt 180                   ;; and turn around
-    stop
-  ]
-
-  ;; go in the direction where the chemical smell is strongest
-  if (chemical >= 0.05) and (chemical < 2)
-  [ uphill-chemical ]
-end
-
-;; sniff left and right, and go where the strongest smell is
-to uphill-chemical  ;; turtle procedure
-  let scent-ahead chemical-scent-at-angle   0
-  let scent-right chemical-scent-at-angle  45
-  let scent-left  chemical-scent-at-angle -45
-  if (scent-right > scent-ahead) or (scent-left > scent-ahead)
-  [ ifelse scent-right > scent-left
-    [ rt 45 ]
-    [ lt 45 ] ]
-end
-
-;; sniff left and right, and go where the strongest smell is
-to uphill-nest-scent  ;; turtle procedure
+to uphill-nest-scent
   let scent-ahead nest-scent-at-angle   0
   let scent-right nest-scent-at-angle  45
   let scent-left  nest-scent-at-angle -45
@@ -319,11 +765,19 @@ to uphill-nest-scent  ;; turtle procedure
     [ lt 45 ] ]
 end
 
-to wiggle  ;; turtle procedure
+to uphill-chemical
+  let scent-ahead chemical-scent-at-angle   0
+  let scent-right chemical-scent-at-angle  45
+  let scent-left  chemical-scent-at-angle -45
+  if (scent-right > scent-ahead) or (scent-left > scent-ahead)
+  [ ifelse scent-right > scent-left
+    [ rt 45 ]
+    [ lt 45 ] ]
+end
+
+to wiggle
   rt random 40
   lt random 40
-
-  ;; Verificação básica se está na borda
   if not can-move? 1 [
     rt 180
   ]
@@ -332,18 +786,17 @@ end
 to-report nest-scent-at-angle [angle]
   let p patch-right-and-ahead angle 1
   if p = nobody [ report 0 ]
-  if [obstacle?] of p [ report 0 ]  ;; Não sente cheiro de ninho através de obstáculos
+  if [obstacle?] of p [ report 0 ]
   report [nest-scent] of p
 end
 
 to-report chemical-scent-at-angle [angle]
   let p patch-right-and-ahead angle 1
   if p = nobody [ report 0 ]
-  if [obstacle?] of p [ report 0 ]  ;; Não sente químico em obstáculos
+  if [obstacle?] of p [ report 0 ]
   report [chemical] of p
 end
 
-;; Procedimento para visualizar a energia
 to display-energy
   ifelse show-energy?
   [
@@ -358,7 +811,6 @@ to display-energy
   ]
 end
 
-;; Controle de obstáculos
 to update-obstacles
   ask patches [
     if obstacle? [
@@ -369,9 +821,7 @@ to update-obstacles
   setup-obstacles
 end
 
-;; Controle para mudar o número de patches de cada tipo de solo
 to update-solos
-  ;; Limpar todos os tipos de solo
   ask patches [
     if solo-type > 0 [
       set solo-type 0
@@ -379,9 +829,207 @@ to update-solos
       recolor-patch
     ]
   ]
-
-  ;; Recriar os solos
   setup-solos
+end
+
+;; Novos procedimentos adicionais para melhorar a simulação
+
+;; Procedimento para resetar a simulação mantendo configurações
+to reset-simulation
+  ask turtles [ die ]
+  ask patches [
+    set chemical 0
+    if food-source-number > 0 [
+      set food one-of [1 2]
+    ]
+    recolor-patch
+  ]
+  set queen-food-count 0
+  set mirmecobio-count 0
+  set total-food-collected 0
+  set game-over? false
+
+  ;; Recriar formigas
+  create-turtles 1 [
+    set ant-type "queen"
+    set size 3
+    set color pink
+    set energy energy-inicial * 2
+    set carrying-food? false
+    set food-delivered 0
+    set hunt-cooldown 0
+    set fleeing? false
+    set flee-timer 0
+    set last-damage-tick 0
+    set target-enemy nobody
+    set patrol-angle 0
+    setxy 0 0
+  ]
+
+  create-turtles (population - 1) [
+    set ant-type "worker"
+    set size 2
+    set color red
+    set energy energy-inicial
+    set carrying-food? false
+    set food-delivered 0
+    set hunt-cooldown 0
+    set fleeing? false
+    set flee-timer 0
+    set last-damage-tick 0
+    set target-enemy nobody
+    set patrol-angle 0
+    setxy (random 10 - 5) (random 10 - 5)
+  ]
+
+  reset-ticks
+end
+
+;; Procedimento para adicionar comida manualmente
+to add-food-source
+  if mouse-down? [
+    ask patch mouse-xcor mouse-ycor [
+      if not nest? and not obstacle? [
+        set food-source-number 4  ;; Fonte de comida temporária
+        set food 5  ;; Mais comida que as fontes normais
+        recolor-patch
+      ]
+    ]
+  ]
+end
+
+;; Procedimento para mostrar estatísticas
+to show-stats
+  print (word "=== ESTATÍSTICAS DA COLÔNIA ===")
+  print (word "Tempo decorrido: " ticks " ticks")
+  print (word "Formigas vivas: " count turtles with [ant-type != "mirmecobio"])
+  print (word "  - Operárias: " count turtles with [ant-type = "worker"])
+  print (word "  - Ninjas: " count turtles with [ant-type = "ninja"])
+  print (word "  - Tanks: " count turtles with [ant-type = "tank"])
+  print (word "  - Rainha: " count turtles with [ant-type = "queen"])
+  print (word "Mirmecóbios ativos: " mirmecobio-count)
+  print (word "Comida coletada total: " total-food-collected)
+  print (word "Comida da rainha: " queen-food-count)
+  print (word "Reproduções possíveis: " floor(queen-food-count / reproduction-threshold))
+
+  ;; Energia média por tipo
+  if any? turtles with [ant-type = "worker"] [
+    print (word "Energia média operárias: " precision (mean [energy] of turtles with [ant-type = "worker"]) 2)
+  ]
+  if any? turtles with [ant-type = "ninja"] [
+    print (word "Energia média ninjas: " precision (mean [energy] of turtles with [ant-type = "ninja"]) 2)
+  ]
+  if any? turtles with [ant-type = "tank"] [
+    print (word "Energia média tanks: " precision (mean [energy] of turtles with [ant-type = "tank"]) 2)
+  ]
+  if any? turtles with [ant-type = "queen"] [
+    print (word "Energia da rainha: " [energy] of one-of turtles with [ant-type = "queen"])
+  ]
+  print "=================================="
+end
+
+;; Procedimento para modo de emergência (quando colônia está em perigo)
+to emergency-mode
+  ;; Aumentar taxa de reprodução temporariamente
+  ask turtles with [ant-type = "queen"] [
+    if queen-food-count >= (reproduction-threshold * 0.5) [
+      reproduce-ants
+      set queen-food-count queen-food-count - (reproduction-threshold * 0.5)
+    ]
+  ]
+
+  ;; Aumentar agressividade dos defensores
+  ask turtles with [ant-type = "ninja" or ant-type = "tank"] [
+    set energy energy + 100  ;; Boost de energia
+  ]
+
+  ;; Aumentar eficiência das operárias
+  ask turtles with [ant-type = "worker"] [
+    set energia-ganho energia-ganho * 1.5
+  ]
+end
+
+;; Procedimento para balancear a simulação automaticamente
+to auto-balance
+  let total-ants count turtles with [ant-type != "mirmecobio"]
+  let total-predators mirmecobio-count
+
+  ;; Se há muitos predadores comparado às formigas
+  if total-predators > (total-ants / 5) [
+    set mirmecobio-spawn-rate mirmecobio-spawn-rate * 0.8  ;; Reduz spawn de predadores
+  ]
+
+  ;; Se há poucas formigas
+  if total-ants < 10 [
+    emergency-mode
+  ]
+
+  ;; Se há muitas formigas, aumenta dificuldade
+  if total-ants > 50 [
+    set mirmecobio-spawn-rate mirmecobio-spawn-rate * 1.2
+  ]
+end
+
+;; Reportar informações úteis para monitores
+to-report worker-count
+  report count turtles with [ant-type = "worker"]
+end
+
+to-report ninja-count
+  report count turtles with [ant-type = "ninja"]
+end
+
+to-report tank-count
+  report count turtles with [ant-type = "tank"]
+end
+
+to-report predator-count
+  report mirmecobio-count
+end
+
+to-report queen-energy
+  let queens turtles with [ant-type = "queen"]
+  ifelse any? queens [
+    report [energy] of one-of queens
+  ] [
+    report 0
+  ]
+end
+
+to-report food-in-nest
+  report queen-food-count
+end
+
+to-report average-worker-energy
+  let workers turtles with [ant-type = "worker"]
+  ifelse any? workers [
+    report precision (mean [energy] of workers) 2
+  ] [
+    report 0
+  ]
+end
+
+to-report chemical-intensity
+  report precision (mean [chemical] of patches) 4
+end
+
+;; Procedimento para criar diferentes cenários de teste
+to scenario-peaceful
+  set mirmecobio-spawn-rate 0.05  ;; Menos predadores
+  set reproduction-threshold 30   ;; Reprodução mais fácil
+  set energia-ganho 20           ;; Mais energia por comida
+end
+
+to scenario-survival
+  set mirmecobio-spawn-rate 0.2   ;; Mais predadores
+  set reproduction-threshold 70   ;; Reprodução mais difícil
+  set energia-ganho 10           ;; Menos energia por comida
+end
+
+to scenario-balanced
+  set mirmecobio-spawn-rate 0.1
+  set reproduction-threshold 50
+  set energia-ganho 15
 end
 @#$#@#$#@
 GRAPHICS-WINDOW
@@ -484,7 +1132,7 @@ population
 population
 0.0
 200.0
-124.0
+49.0
 1.0
 1
 NIL
@@ -530,7 +1178,7 @@ num-areia
 num-areia
 0
 20
-3.0
+4.0
 1
 1
 NIL
@@ -545,7 +1193,7 @@ num-lama
 num-lama
 0
 20
-3.0
+5.0
 1
 1
 NIL
@@ -560,7 +1208,7 @@ num-fertilizado
 num-fertilizado
 0
 20
-3.0
+5.0
 1
 1
 NIL
@@ -575,7 +1223,7 @@ num-obstacles
 num-obstacles
 0
 20
-10.0
+4.0
 1
 1
 NIL
@@ -818,6 +1466,22 @@ true
 0
 Line -7500403 true 150 0 150 150
 
+mirmecóbio
+false
+0
+Polygon -7500403 false true 135 105
+Polygon -7500403 false true 135 75 150 45 150 45 150 75 165 60 180 60 195 75 195 45 210 60 210 75 225 90 240 90 255 105 255 120 240 135 225 120 210 120 180 105 165 105 165 120 165 135 195 150 210 165 210 180 195 165 180 165 180 150 165 150 165 165 195 180 195 195 180 210 180 195 165 195 165 195 165 180 150 180 150 210 135 225 120 225 120 240 120 255 135 270 135 270 105 270 105 240 90 240 30 270 75 210 75 195 60 180 75 165 75 150 75 150 75 135 90 120 105 90 120 90 135 90 135 75
+Circle -7500403 false true 180 105 0
+Polygon -1 true false 75 210 135 195 75 195
+Polygon -1 true false 60 180 135 165 75 165
+Polygon -1 true false 75 150 135 135 75 135
+Polygon -1 true false 90 120 120 105 105 105 90 105
+Polygon -2674135 true false 165 90 165 75 195 90 165 90
+Line -7500403 true 165 90 240 120
+Polygon -7500403 true true 240 120 240 135 240 120 255 120
+Polygon -16777216 true false 240 135 240 120 255 120
+Polygon -16777216 true false 165 90 165 105 180 105 210 120 225 120 240 135
+
 pentagon
 false
 0
@@ -878,11 +1542,6 @@ Circle -7500403 true true 65 21 108
 Circle -7500403 true true 116 41 127
 Circle -7500403 true true 45 90 120
 Circle -7500403 true true 104 74 152
-
-triangle
-false
-0
-Polygon -7500403 true true 150 30 15 255 285 255
 
 triangle 2
 false
