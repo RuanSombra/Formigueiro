@@ -2,10 +2,6 @@
 
 ---
 
-![UFMA](./ufma_logo.png)&nbsp;&nbsp;&nbsp;&nbsp;![Bacharelado em Ciência e Tecnologia](./bict_logo.png)
-
----
-
 ## Universidade Federal do Maranhão  
 ### Bacharelado em Ciência e Tecnologia 
 ### Disciplina: **EECP0008 - INTELIGÊNCIA ARTIFICIAL (GRADUAÇÃO)**  
